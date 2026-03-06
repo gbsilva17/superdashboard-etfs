@@ -1,0 +1,146 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>SuperDashboard ETFs/Stocks EUA</title>
+    <script src="https://unpkg.com/yahoo-finance2@2.13.3/dist/browser.umd.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <style>
+        body { font-family: Arial; margin: 20px; background: #f8f9fa; }
+        #table { width: 100%; border-collapse: collapse; margin: 20px 0; }
+        th, td { border: 1px solid #ddd; padding: 12px; text-align: right; }
+        th { background: #007bff; color: white; }
+        tr:nth-child(even) { background: #f2f2f2; }
+        .hot { background: #d4edda !important; font-weight: bold; }
+        .cold { background: #f8d7da !important; }
+        #chart { max-width: 100%; height: 300px; margin: 20px 0; }
+        #status { padding: 10px; background: #e9ecef; border-radius: 5px; }
+    </style>
+</head>
+<body>
+    <h1>🚀 SuperDashboard ETFs/Stocks Real-Time (GitHub Pages)</h1>
+    <div id="status">Última atualização: Carregando...</div>
+    <table id="table">
+        <thead><tr><th>Ticker</th><th>Perf Dia %</th><th>Mês %</th><th>3M %</th><th>RS vs SPY</th><th>ATR</th><th>ATR%</th><th>ATRx</th></tr></thead>
+        <tbody></tbody>
+    </table>
+    <canvas id="chart"></canvas>
+    <p><small>ATRx >2 = Hot (expansão). Tickers: SPY VUG QQQ XLE XLI NE RIG CAT WMT NVDA. Refresh 60s.</small></p>
+
+    <script>
+        const tickers = ['SPY', 'VUG', 'QQQ', 'XLE', 'XLI', 'NE', 'RIG', 'CAT', 'WMT', 'NVDA'];
+        const yf = yahooFinance;
+        let chart;
+
+        // Proxy CORS pra Yahoo
+        async function fetchWithProxy(url) {
+            const proxyUrl = `https://api.allorigins.win/get?url=${encodeURIComponent(url)}`;
+            const res = await fetch(proxyUrl);
+            const data = await res.json();
+            return JSON.parse(data.contents);
+        }
+
+        async function fetchData(ticker) {
+            try {
+                const quote = await yf.quote(ticker);
+                const hist = await yf.historical({
+                    symbol: ticker,
+                    from: new Date(Date.now() - 100 * 86400000).toISOString(),
+                    to: new Date().toISOString(),
+                    frequency: '1d'
+                });
+
+                if (hist.quotes.length < 25) return null;
+
+                const closes = hist.quotes.map(q => q.close);
+                const highs = hist.quotes.map(q => q.high);
+                const lows = hist.quotes.map(q => q.low);
+
+                const perf_day = ((quote.regularMarketPrice / closes[closes.length - 2]) - 1) * 100;
+                const perf_month = ((closes[closes.length - 1] / closes[closes.length - 22]) - 1) * 100;
+                const perf_3m = ((closes[closes.length - 1] / closes[0]) - 1) * 100;
+
+                // ATR(14)
+                let sumTR = 0;
+                for (let i = 1; i <= 14 && i < highs.length; i++) {
+                    const hl = highs[i] - lows[i];
+                    const hc = Math.abs(highs[i] - closes[i - 1]);
+                    const lc = Math.abs(lows[i] - closes[i - 1]);
+                    sumTR += Math.max(hl, hc, lc);
+                }
+                const atr = sumTR / 14;
+                const atr_pct = (atr / quote.regularMarketPrice) * 100;
+                const range_today = highs[highs.length - 1] - lows[lows.length - 1];
+                const atrx = range_today / atr;
+
+                // RS vs SPY mês
+                const spyHist = await yf.historical({
+                    symbol: 'SPY',
+                    from: new Date(Date.now() - 30 * 86400000).toISOString(),
+                    to: new Date().toISOString(),
+                    frequency: '1d'
+                });
+                const spy_month = ((spyHist.quotes[spyHist.quotes.length - 1].close / spyHist.quotes[spyHist.quotes.length - 22].close) - 1) * 100 || 1;
+                const rs = perf_month / spy_month;
+
+                return {
+                    ticker,
+                    perf_day: perf_day.toFixed(2),
+                    perf_month: perf_month.toFixed(2),
+                    perf_3m: perf_3m.toFixed(2),
+                    rs: rs.toFixed(2),
+                    atr: atr.toFixed(2),
+                    atr_pct: atr_pct.toFixed(2),
+                    atrx: atrx.toFixed(2)
+                };
+            } catch (e) {
+                console.error(e);
+                return null;
+            }
+        }
+
+        async function update() {
+            document.getElementById('status').textContent = `Atualizando... (${new Date().toLocaleTimeString('pt-BR')})`;
+            const tbody = document.querySelector('#table tbody');
+            tbody.innerHTML = '';
+            let data = [];
+            for (let t of tickers) {
+                const rowData = await fetchData(t);
+                if (rowData) {
+                    data.push(rowData);
+                    const row = tbody.insertRow();
+                    const atrxClass = parseFloat(rowData.atrx) > 2 ? 'hot' : parseFloat(rowData.rs) < 80 ? 'cold' : '';
+                    row.className = atrxClass;
+                    row.innerHTML = `
+                        <td style="text-align:left; font-weight:bold;">${rowData.ticker}</td>
+                        <td>${rowData.perf_day}</td><td>${rowData.perf_month}</td><td>${rowData.perf_3m}</td>
+                        <td>${rowData.rs}</td><td>${rowData.atr}</td><td>${rowData.atr_pct}</td><td>${rowData.atrx}</td>
+                    `;
+                }
+            }
+            data.sort((a, b) => parseFloat(b.rs) - parseFloat(a.rs));
+            updateChart(data.slice(0, 10));
+            document.getElementById('status').textContent = `Atualizado: ${new Date().toLocaleTimeString('pt-BR')} | Top RS: ${data[0]?.ticker}`;
+        }
+
+        function updateChart(data) {
+            const ctx = document.getElementById('chart').getContext('2d');
+            if (chart) chart.destroy();
+            chart = new Chart(ctx, {
+                type: 'bar',
+                data: {
+                    labels: data.map(d => d.ticker),
+                    datasets: [{
+                        label: 'RS vs SPY',
+                        data: data.map(d => parseFloat(d.rs)),
+                        backgroundColor: data.map(d => parseFloat(d.atrx) > 2 ? 'green' : 'steelblue')
+                    }]
+                },
+                options: { scales: { y: { beginAtZero: true } }, responsive: true }
+            });
+        }
+
+        update();
+        setInterval(update, 60000);  // 60s
+    </script>
+</body>
+</html>
